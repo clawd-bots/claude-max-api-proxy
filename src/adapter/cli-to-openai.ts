@@ -75,12 +75,14 @@ export function cliResultToOpenai(
     ? Object.keys(result.modelUsage)[0]
     : "claude-sonnet-4";
 
+  const hasToolCalls = toolCalls && toolCalls.length > 0;
+
   const message: OpenAIChatResponse["choices"][0]["message"] = {
     role: "assistant",
     content: result.result,
   };
 
-  if (toolCalls && toolCalls.length > 0) {
+  if (hasToolCalls) {
     message.tool_calls = toolCalls;
   }
 
@@ -93,7 +95,7 @@ export function cliResultToOpenai(
       {
         index: 0,
         message,
-        finish_reason: "stop",
+        finish_reason: hasToolCalls ? "tool_calls" : "stop",
       },
     ],
     usage: {

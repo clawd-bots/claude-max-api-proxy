@@ -9,8 +9,20 @@ export interface OpenAIContentBlock {
 }
 
 export interface OpenAIChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string | OpenAIContentBlock[];
+  tool_call_id?: string;
+}
+
+export interface OpenAIToolFunction {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface OpenAIToolDefinition {
+  type: "function";
+  function: OpenAIToolFunction;
 }
 
 export interface OpenAIChatRequest {
@@ -23,6 +35,8 @@ export interface OpenAIChatRequest {
   frequency_penalty?: number;
   presence_penalty?: number;
   user?: string; // Used for session mapping
+  tools?: OpenAIToolDefinition[];
+  tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 }
 
 export interface OpenAIToolCall {
@@ -51,7 +65,7 @@ export interface OpenAIChatResponseChoice {
     content: string;
     tool_calls?: OpenAIToolCall[];
   };
-  finish_reason: "stop" | "length" | "content_filter" | null;
+  finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
 }
 
 export interface OpenAIChatResponse {
@@ -76,7 +90,7 @@ export interface OpenAIChatChunkDelta {
 export interface OpenAIChatChunkChoice {
   index: number;
   delta: OpenAIChatChunkDelta;
-  finish_reason: "stop" | "length" | "content_filter" | null;
+  finish_reason: "stop" | "length" | "content_filter" | "tool_calls" | null;
 }
 
 export interface OpenAIChatChunk {

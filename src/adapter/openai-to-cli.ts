@@ -3,6 +3,7 @@
  */
 
 import type { OpenAIChatRequest, OpenAIContentBlock } from "../types/openai.js";
+import { formatToolsForPrompt } from "./tool-call-parser.js";
 
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
@@ -126,6 +127,13 @@ export function messagesToPrompt(
         // Previous assistant responses for context
         parts.push(`<previous_response>\n${text}\n</previous_response>\n`);
         break;
+
+      case "tool":
+        // Tool result messages from OpenClaw — include tool_call_id for context
+        parts.push(
+          `<tool_result tool_call_id="${msg.tool_call_id || "unknown"}">\n${text}\n</tool_result>\n`
+        );
+        break;
     }
   }
 
@@ -136,8 +144,18 @@ export function messagesToPrompt(
  * Convert OpenAI chat request to CLI input format
  */
 export function openaiToCli(request: OpenAIChatRequest): CliInput {
+  let prompt = messagesToPrompt(request.messages);
+
+  // Inject external tool definitions into the prompt if tools are provided
+  if (request.tools && request.tools.length > 0) {
+    const toolsPrompt = formatToolsForPrompt(request.tools);
+    if (toolsPrompt) {
+      prompt = `<system>\n${toolsPrompt}\n</system>\n\n${prompt}`;
+    }
+  }
+
   return {
-    prompt: messagesToPrompt(request.messages),
+    prompt,
     model: extractModel(request.model),
     sessionId: request.user, // Use OpenAI's user field for session mapping
   };
