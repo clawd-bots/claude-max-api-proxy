@@ -93,6 +93,7 @@ const OPENCLAW_TOOL_MAPPING_PROMPT = [
   "Run `openclaw skills list --eligible --json` to see all available skills.",
 ].join("\n");
 
+
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
   private buffer: string = "";

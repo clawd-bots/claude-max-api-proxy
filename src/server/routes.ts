@@ -113,6 +113,12 @@ async function handleStreamingResponse(
     let toolCallKillTimer: ReturnType<typeof setTimeout> | null = null;
     // Accumulate all text for debug logging
     let fullText = "";
+    // Track native tool loop to prevent endless multi-turn cycles
+    let nativeToolCount = 0;
+    let lastTextTime = Date.now();
+    const hasExternalTools = true; // External tools are always injected via system prompt by OpenClaw
+    const NATIVE_TOOL_LOOP_LIMIT = 4; // Kill after this many native tools without text output
+    const NATIVE_TOOL_LOOP_TIMEOUT = 30000; // 30s without text = stuck in loop
 
     // Handle actual client disconnect (response stream closed)
     res.on("close", () => {
@@ -258,6 +264,12 @@ async function handleStreamingResponse(
         hasEmittedText = true;
       }
 
+      // Reset native tool loop timer on any text output
+      if (emitText) {
+        lastTextTime = Date.now();
+        nativeToolCount = 0;
+      }
+
       // Handle tool calls detected mid-stream
       if (toolCalls.length > 0) {
         pendingToolCalls.push(...toolCalls);
@@ -292,7 +304,8 @@ async function handleStreamingResponse(
       const toolName = (cb && cb.type === "tool_use" && cb.name) || "unknown";
       currentNativeToolName = toolName;
       currentNativeToolInput = "";
-      console.error(`[Streaming] Native tool use detected: ${toolName}`);
+      nativeToolCount++;
+      console.error(`[Streaming] Native tool use detected: ${toolName} (count=${nativeToolCount})`);
 
       // If we already have pending <tool_call> blocks from text output,
       // the model is confused — kill immediately and emit what we have
@@ -303,6 +316,22 @@ async function handleStreamingResponse(
           isComplete = true;
           subprocess.kill();
           finalizeStream();
+        }
+        return;
+      }
+
+      // Detect native tool loops — if the model is stuck using native tools
+      // without producing text output, it's likely confused and should be stopped.
+      // This prevents 15-minute timeouts from runaway tool loops.
+      if (hasExternalTools && nativeToolCount >= NATIVE_TOOL_LOOP_LIMIT) {
+        const timeSinceText = Date.now() - lastTextTime;
+        if (timeSinceText > NATIVE_TOOL_LOOP_TIMEOUT) {
+          console.error(`[Streaming] Killing subprocess — native tool loop detected (${nativeToolCount} tools, ${Math.round(timeSinceText / 1000)}s without text)`);
+          if (!isComplete && subprocess.isRunning()) {
+            isComplete = true;
+            subprocess.kill();
+            finalizeStream();
+          }
         }
       }
     });
@@ -320,12 +349,16 @@ async function handleStreamingResponse(
         return;
       }
 
-      // Intercept Bash commands that try to call openclaw CLI
+      // Intercept Bash commands that try to call openclaw CLI directly.
+      // Only match actual CLI invocations (e.g., "openclaw browser open"),
+      // NOT path references (e.g., "tail ~/.openclaw/logs/...").
       if (currentNativeToolName === "Bash" && currentNativeToolInput) {
         try {
           const input = JSON.parse(currentNativeToolInput);
           const cmd = typeof input.command === "string" ? input.command : "";
-          if (cmd.match(/\bopenclaw\b/i)) {
+          // Match "openclaw" at start of command or after pipe/semicolon/&&/||
+          // but NOT in file paths (preceded by / or ~/ or .)
+          if (cmd.match(/(?:^|[|;&]\s*)openclaw\b/i)) {
             console.error(`[Streaming] Intercepted Bash→openclaw command: ${cmd.slice(0, 150)}`);
             pendingToolCalls.push({
               id: generateToolCallId(),
@@ -359,7 +392,11 @@ async function handleStreamingResponse(
     subprocess.on("result", (result: ClaudeCliResult) => {
       if (toolCallKillTimer) clearTimeout(toolCallKillTimer);
       isComplete = true;
-      console.error(`[Streaming] Result received. fullText length=${fullText.length}`);
+      const hasToolCallText = fullText.includes("<tool_call>");
+      console.error(`[Streaming] Result received. hasToolCallText=${hasToolCallText}, pendingToolCalls=${pendingToolCalls.length}, fullText length=${fullText.length}, nativeTools=${nativeToolCount}`);
+      if (hasToolCallText && pendingToolCalls.length === 0) {
+        console.error(`[Streaming] WARNING: <tool_call> found in text but no tool calls were parsed mid-stream`);
+      }
       finalizeStream(result.usage);
       resolve();
     });
