@@ -142,10 +142,62 @@ export function parseToolCalls(text: string): {
 /**
  * Try to parse a single tool call block content (the text between tags).
  * Returns the parsed tool call or null if malformed.
+ *
+ * Robust extraction: first tries parsing the full trimmed content as JSON.
+ * If that fails, scans for the outermost `{...}` object and tries that.
+ * This handles models that include extra whitespace, newlines, or prose
+ * around the JSON object inside the <tool_call> block.
  */
 function tryParseToolCallBlock(blockContent: string): OpenAIToolCall | null {
+  const trimmed = blockContent.trim();
+  if (!trimmed) return null;
+
+  // Attempt 1: parse the entire trimmed content
+  const result = tryParseAsToolCall(trimmed);
+  if (result) return result;
+
+  // Attempt 2: extract the first top-level JSON object from the content
+  const braceStart = trimmed.indexOf("{");
+  if (braceStart !== -1) {
+    // Find the matching closing brace
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = braceStart; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === "\\" && inString) {
+        escape = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const jsonStr = trimmed.slice(braceStart, i + 1);
+          const r = tryParseAsToolCall(jsonStr);
+          if (r) return r;
+          break;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Helper: parse a JSON string as a tool call if it has the right shape */
+function tryParseAsToolCall(json: string): OpenAIToolCall | null {
   try {
-    const parsed = JSON.parse(blockContent.trim());
+    const parsed = JSON.parse(json);
     if (parsed.name && typeof parsed.name === "string") {
       return {
         id: generateToolCallId(),
@@ -267,10 +319,15 @@ export class StreamingToolCallDetector {
   /**
    * Flush remaining buffer (call when stream ends).
    * Returns any remaining text and tool calls from partial content.
+   *
+   * Handles both complete blocks (via parseToolCalls regex) and partial blocks
+   * where the opening <tool_call> tag is present but </tool_call> is missing
+   * (e.g., subprocess killed mid-block).
    */
   flush(): { remainingText: string; toolCalls: OpenAIToolCall[] } {
     const remaining = this.buffer;
     this.buffer = "";
+    const wasInToolCall = this.inToolCall;
     this.inToolCall = false;
 
     if (!remaining) {
@@ -279,6 +336,21 @@ export class StreamingToolCallDetector {
 
     // Parse any complete tool_call blocks in remaining content
     const { cleanText, toolCalls } = parseToolCalls(remaining);
+
+    // If we were mid-block when flushed (no closing tag arrived), try to
+    // salvage the partial block. The buffer starts with <tool_call>.
+    if (wasInToolCall && toolCalls.length === 0) {
+      const tagLen = "<tool_call>".length;
+      if (remaining.startsWith("<tool_call>") && remaining.length > tagLen) {
+        const blockContent = remaining.slice(tagLen);
+        const toolCall = tryParseToolCallBlock(blockContent);
+        if (toolCall) {
+          // Remove the partial block from emitted text
+          return { remainingText: "", toolCalls: [toolCall] };
+        }
+      }
+    }
+
     return { remainingText: cleanText, toolCalls };
   }
 }

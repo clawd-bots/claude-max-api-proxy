@@ -449,9 +449,23 @@ async function handleStreamingResponse(
       isComplete = true;
       const hasToolCallText = fullText.includes("<tool_call>");
       console.error(`[Streaming] Result received. hasToolCallText=${hasToolCallText}, pendingToolCalls=${pendingToolCalls.length}, fullText length=${fullText.length}, nativeTools=${nativeToolCount}`);
-      if (hasToolCallText && pendingToolCalls.length === 0) {
-        console.error(`[Streaming] WARNING: <tool_call> found in text but no tool calls were parsed mid-stream`);
+
+      // Fallback: if the streaming detector missed tool calls but the result
+      // text contains <tool_call> blocks, parse them from the result.
+      // This catches cases where: (a) the JSON inside the block was multi-line
+      // or had extra whitespace that the streaming parser couldn't handle chunk-
+      // by-chunk, (b) chunk boundaries prevented the detector from seeing
+      // complete blocks, or (c) native tool interleaving disrupted detection.
+      if (pendingToolCalls.length === 0 && result.result) {
+        const fallback = parseToolCalls(result.result);
+        if (fallback.toolCalls.length > 0) {
+          console.error(`[Streaming] Fallback: parsed ${fallback.toolCalls.length} tool call(s) from result text: ${fallback.toolCalls.map(tc => tc.function.name).join(", ")}`);
+          pendingToolCalls.push(...fallback.toolCalls);
+        } else if (hasToolCallText) {
+          console.error(`[Streaming] WARNING: <tool_call> found in text but could not parse any tool calls (streaming or fallback)`);
+        }
       }
+
       finalizeStream(result.usage);
       resolve();
     });
