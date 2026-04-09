@@ -25,6 +25,7 @@ import {
   isContentBlockStop,
 } from "../types/claude-cli.js";
 import type { ClaudeModel } from "../adapter/openai-to-cli.js";
+import { shouldForceNoSessionPersistence } from "../config/session-cli.js";
 
 export interface SubprocessOptions {
   model: ClaudeModel;
@@ -103,13 +104,18 @@ const OPENCLAW_TOOL_MAPPING_PROMPT_STRICT = [
   "## OpenClaw orchestrator mode (strict)",
   "",
   "You are the reasoning and planning layer only. OpenClaw (the caller) runs all",
-  "tools in the user's environment. Claude Code native tools must not be used.",
+  "actions in the user's environment via <tool_call> XML.",
+  "",
+  "### Allowed: read-only local inspection only",
+  "You MAY use these Claude Code native tools to inspect the local workspace:",
+  "`Read`, `Glob`, `Grep` — for context only. Do not use them to perform actions",
+  "that should go through OpenClaw tools.",
   "",
   "### FORBIDDEN",
-  "- Do NOT invoke any Claude Code native tool (Read, Write, Edit, Bash, Grep, Glob,",
-  "  Task, WebFetch, WebSearch, or any other tool_use in this CLI).",
+  "- Do NOT invoke Write, Edit, Bash, Task, WebFetch, WebSearch, or any other",
+  "  native tool besides Read, Glob, and Grep.",
   "- Do NOT run `openclaw` or other shell commands via Bash.",
-  "- Do NOT substitute Bash/Read for actions that OpenClaw tools can perform.",
+  "- Do NOT substitute Bash or file writes for actions that OpenClaw tools can perform.",
   "",
   "### REQUIRED",
   "- Use plain text for reasoning, plans, and short explanations.",
@@ -250,7 +256,6 @@ export class ClaudeSubprocess extends EventEmitter {
       "--include-partial-messages", // Enable streaming chunks
       "--model",
       options.model, // Model alias (opus/sonnet/haiku)
-      "--no-session-persistence", // Don't save sessions
       "--append-system-prompt",
       options.orchestratorStrict
         ? OPENCLAW_TOOL_MAPPING_PROMPT_STRICT
@@ -260,6 +265,14 @@ export class ClaudeSubprocess extends EventEmitter {
 
     if (options.sessionId) {
       args.push("--session-id", options.sessionId);
+    }
+
+    // Stateless API: avoid writing session files when no session id. When
+    // sessionId is set, allow CLI persistence unless CLAW_PROXY_NO_SESSION_PERSISTENCE.
+    const noPersist =
+      shouldForceNoSessionPersistence() || !options.sessionId;
+    if (noPersist) {
+      args.push("--no-session-persistence");
     }
 
     return args;

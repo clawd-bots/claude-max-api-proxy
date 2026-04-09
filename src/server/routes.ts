@@ -20,6 +20,8 @@ import {
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
 import { isOrchestratorStrict } from "../config/orchestrator.js";
+import { isOrchestratorStrictNativeToolAllowed } from "../config/orchestrator-strict-native-tools.js";
+import { logChatRequestDebug } from "../config/request-log.js";
 
 /**
  * Handle POST /v1/chat/completions
@@ -58,7 +60,8 @@ export async function handleChatCompletions(
     }
 
     // Convert to CLI input format
-    const cliInput = openaiToCli(body);
+    const cliInput = openaiToCli(body, { headers: req.headers });
+    logChatRequestDebug(requestId, body, cliInput);
     const subprocess = new ClaudeSubprocess();
 
     if (stream) {
@@ -329,9 +332,13 @@ async function handleStreamingResponse(
     subprocess.on("tool_use_start", (event: ClaudeCliStreamEvent) => {
       const cb = event.event.content_block;
       const toolName = (cb && cb.type === "tool_use" && cb.name) || "unknown";
+      const allowedReadOnly = isOrchestratorStrictNativeToolAllowed(toolName);
 
-      // OpenClaw-first strict: native tool_use is forbidden — kill immediately
-      if (cliInput.orchestratorStrict) {
+      // OpenClaw-first strict: block native tools except read-only (Read/Glob/Grep)
+      if (
+        cliInput.orchestratorStrict &&
+        !allowedReadOnly
+      ) {
         console.error(
           `[Streaming] Orchestrator strict: native tool blocked: ${toolName}`
         );
@@ -343,6 +350,11 @@ async function handleStreamingResponse(
           finalizeStream();
         }
         return;
+      }
+      if (cliInput.orchestratorStrict && allowedReadOnly) {
+        console.error(
+          `[Streaming] Orchestrator strict: allowing read-only native tool: ${toolName}`
+        );
       }
 
       currentNativeToolName = toolName;
@@ -508,6 +520,13 @@ async function handleNonStreamingResponse(
         const cb = event.event.content_block;
         const toolName =
           (cb && cb.type === "tool_use" && cb.name) || "unknown";
+        const allowedReadOnly = isOrchestratorStrictNativeToolAllowed(toolName);
+        if (allowedReadOnly) {
+          console.error(
+            `[NonStreaming] Orchestrator strict: allowing read-only native tool: ${toolName}`
+          );
+          return;
+        }
         console.error(
           `[NonStreaming] Orchestrator strict: native tool blocked: ${toolName}`
         );

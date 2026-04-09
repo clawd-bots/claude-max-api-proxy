@@ -14,6 +14,12 @@ npm run dev      # Watch mode for development
 | Variable | Description |
 |----------|-------------|
 | `CLAW_PROXY_ORCHESTRATOR_STRICT` | Set to `1`, `true`, or `yes` for OpenClaw-first strict mode (requires non-empty `tools` on chat requests). See README. |
+| `CLAW_PROXY_LOG_REQUESTS` | Set to `1`, `true`, or `yes` to log each chat request (model, lengths, session id, first 2000 chars of the CLI prompt) to stderr. |
+| `CLAW_PROXY_NO_SESSION_PERSISTENCE` | Set to `1`, `true`, or `yes` to always pass `--no-session-persistence` to the CLI, even when a session id is resolved. |
+
+### Claude CLI session id (multi-turn)
+
+The proxy passes `--session-id` to the CLI when a session key is resolved from (first match wins): `metadata.conversation_id` / `metadata.session_id` / `metadata.thread_id`, JSON `session_id`, `claude_session_id`, `conversation_id`, `thread_id`, OpenAI `user`, or headers `X-Session-Id` / `X-Claude-Session-Id`. Values that are not already CLI-style UUIDs are mapped through the on-disk session map (`src/session/manager.ts`) to a stable Claude session id. If none are set, the CLI runs with `--no-session-persistence` (stateless).
 
 Add these to the LaunchAgent plist `EnvironmentVariables` or export them in the shell before `npm start` if not using the service.
 
@@ -61,6 +67,9 @@ launchctl list com.openclaw.claude-max-proxy
 ## Architecture
 
 - `src/config/orchestrator.ts` - `CLAW_PROXY_ORCHESTRATOR_STRICT` / `shouldEnforceOrchestratorStrict`
+- `src/config/orchestrator-strict-native-tools.ts` - read-only native tools allowed in strict mode
+- `src/config/session-cli.ts` - `CLAW_PROXY_NO_SESSION_PERSISTENCE`
+- `src/config/request-log.ts` - `CLAW_PROXY_LOG_REQUESTS`
 - `src/types/claude-cli.ts` - Claude CLI JSON streaming types and type guards
 - `src/types/openai.ts` - OpenAI-compatible API types
 - `src/adapter/openai-to-cli.ts` - Converts OpenAI requests to CLI input

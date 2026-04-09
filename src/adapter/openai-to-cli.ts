@@ -2,9 +2,11 @@
  * Converts OpenAI chat request format to Claude CLI input
  */
 
+import type { IncomingHttpHeaders } from "node:http";
 import type { OpenAIChatRequest, OpenAIContentBlock } from "../types/openai.js";
 import { formatToolsForPrompt } from "./tool-call-parser.js";
 import { shouldEnforceOrchestratorStrict } from "../config/orchestrator.js";
+import { sessionManager } from "../session/manager.js";
 
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
@@ -14,6 +16,76 @@ export interface CliInput {
   sessionId?: string;
   /** True when strict OpenClaw-orchestrator mode is active for this request */
   orchestratorStrict?: boolean;
+}
+
+export interface OpenaiToCliOptions {
+  /** Request headers — used for `X-Session-Id` / `X-Claude-Session-Id` */
+  headers?: IncomingHttpHeaders;
+}
+
+const CLI_SESSION_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function looksLikeCliSessionUuid(s: string): boolean {
+  return CLI_SESSION_UUID_RE.test(s);
+}
+
+function pickMetadataSessionId(
+  request: OpenAIChatRequest
+): string | undefined {
+  const m = request.metadata;
+  if (!m || typeof m !== "object") return undefined;
+  for (const k of [
+    "conversation_id",
+    "session_id",
+    "thread_id",
+    "claude_session_id",
+  ]) {
+    const v = m[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a stable conversation key from the request (body + headers).
+ * Does not map to Claude CLI session UUID — use {@link resolveCliSessionId} for that.
+ */
+export function resolveSessionId(
+  request: OpenAIChatRequest,
+  headers?: IncomingHttpHeaders
+): string | undefined {
+  const fromMeta = pickMetadataSessionId(request);
+  if (fromMeta) return fromMeta;
+
+  const fromBody =
+    request.session_id?.trim() ||
+    request.claude_session_id?.trim() ||
+    request.conversation_id?.trim() ||
+    request.thread_id?.trim() ||
+    request.user?.trim();
+  if (fromBody) return fromBody;
+
+  const raw =
+    headers?.["x-session-id"] ?? headers?.["x-claude-session-id"];
+  if (typeof raw === "string") return raw.trim() || undefined;
+  if (Array.isArray(raw) && raw[0]) return raw[0].trim() || undefined;
+  return undefined;
+}
+
+/**
+ * Session id passed to Claude CLI (`--session-id`). UUIDs from the CLI are used
+ * as-is; any other stable key is mapped through {@link sessionManager} so
+ * multi-turn works when the client sends a conversation id but not a CLI uuid.
+ */
+export function resolveCliSessionId(
+  request: OpenAIChatRequest,
+  headers?: IncomingHttpHeaders
+): string | undefined {
+  const key = resolveSessionId(request, headers);
+  if (!key) return undefined;
+  if (looksLikeCliSessionUuid(key)) return key;
+  return sessionManager.getOrCreate(key, extractModel(request.model));
 }
 
 const MODEL_MAP: Record<string, ClaudeModel> = {
@@ -154,7 +226,10 @@ export function messagesToPrompt(
 /**
  * Convert OpenAI chat request to CLI input format
  */
-export function openaiToCli(request: OpenAIChatRequest): CliInput {
+export function openaiToCli(
+  request: OpenAIChatRequest,
+  options?: OpenaiToCliOptions
+): CliInput {
   const orchestratorStrict = shouldEnforceOrchestratorStrict(request);
   let prompt = messagesToPrompt(request.messages, {
     stripOpenClawSections: !orchestratorStrict,
@@ -171,7 +246,7 @@ export function openaiToCli(request: OpenAIChatRequest): CliInput {
   return {
     prompt,
     model: extractModel(request.model),
-    sessionId: request.user, // Use OpenAI's user field for session mapping
+    sessionId: resolveCliSessionId(request, options?.headers),
     orchestratorStrict,
   };
 }

@@ -34,7 +34,16 @@ export interface OpenAIChatRequest {
   top_p?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
-  user?: string; // Used for session mapping
+  user?: string; // Used for session mapping (Claude CLI --session-id)
+  /** When set, used as `--session-id` if `user` is not set */
+  session_id?: string;
+  /** Alias for `session_id` for clients that send a Claude-specific key */
+  claude_session_id?: string;
+  /** Some clients (OpenClaw, assistants-style APIs) send a thread id here */
+  conversation_id?: string;
+  thread_id?: string;
+  /** OpenAI-style metadata bag — `conversation_id` / `session_id` used for CLI session */
+  metadata?: Record<string, unknown>;
   tools?: OpenAIToolDefinition[];
   tool_choice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 }

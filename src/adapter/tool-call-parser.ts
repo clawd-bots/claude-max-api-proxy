@@ -54,7 +54,7 @@ export function formatToolsForPrompt(
     "- You may output multiple <tool_call> blocks",
     "- You may output plain text before tool calls to explain your reasoning",
     "- After outputting tool call blocks, do NOT output more text — OpenClaw will execute the tools and continue",
-    "- These tools are executed by OpenClaw, not by Claude Code. Do NOT use Claude Code native tools (Read, Bash, Write, Edit, etc.) for anything OpenClaw tools can do.",
+    "- These tools are executed by OpenClaw. You may use Read, Glob, or Grep only for local read-only inspection; do NOT use Write, Edit, Bash, or other native tools for actions OpenClaw tools should perform.",
     "- All actions in the user's environment (desktop, browser, sessions, memory, etc.) MUST go through these tools and <tool_call> blocks only.",
   ];
 
