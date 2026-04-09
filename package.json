@@ -12,7 +12,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/server/standalone.js",
-    "test": "node --test dist/**/*.test.js",
+    "pretest": "npm run build",
+    "test": "node --test \"dist/**/*.test.js\"",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },

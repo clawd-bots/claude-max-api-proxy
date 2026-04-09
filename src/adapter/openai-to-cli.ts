@@ -4,6 +4,7 @@
 
 import type { OpenAIChatRequest, OpenAIContentBlock } from "../types/openai.js";
 import { formatToolsForPrompt } from "./tool-call-parser.js";
+import { shouldEnforceOrchestratorStrict } from "../config/orchestrator.js";
 
 export type ClaudeModel = "opus" | "sonnet" | "haiku";
 
@@ -11,6 +12,8 @@ export interface CliInput {
   prompt: string;
   model: ClaudeModel;
   sessionId?: string;
+  /** True when strict OpenClaw-orchestrator mode is active for this request */
+  orchestratorStrict?: boolean;
 }
 
 const MODEL_MAP: Record<string, ClaudeModel> = {
@@ -105,18 +108,26 @@ function stripOpenClawTooling(text: string): string {
  * We format the messages into a readable format that preserves context.
  */
 export function messagesToPrompt(
-  messages: OpenAIChatRequest["messages"]
+  messages: OpenAIChatRequest["messages"],
+  options?: { stripOpenClawSections?: boolean }
 ): string {
+  const stripOpenClawSections = options?.stripOpenClawSections !== false;
+
   const parts: string[] = [];
 
   for (const msg of messages) {
     const text = extractText(msg.content);
     switch (msg.role) {
-      case "system":
+      case "system": {
         // System messages become context instructions
-        // Strip OpenClaw tooling sections that conflict with Claude Code's native tools
-        parts.push(`<system>\n${stripOpenClawTooling(text)}\n</system>\n`);
+        // In default mode, strip OpenClaw tooling sections that conflict with
+        // Claude Code. In orchestrator strict mode, preserve them for OpenClaw.
+        const systemBody = stripOpenClawSections
+          ? stripOpenClawTooling(text)
+          : text;
+        parts.push(`<system>\n${systemBody}\n</system>\n`);
         break;
+      }
 
       case "user":
         // User messages are the main prompt
@@ -144,11 +155,14 @@ export function messagesToPrompt(
  * Convert OpenAI chat request to CLI input format
  */
 export function openaiToCli(request: OpenAIChatRequest): CliInput {
-  let prompt = messagesToPrompt(request.messages);
+  const orchestratorStrict = shouldEnforceOrchestratorStrict(request);
+  let prompt = messagesToPrompt(request.messages, {
+    stripOpenClawSections: !orchestratorStrict,
+  });
 
   // Inject external tool definitions into the prompt if tools are provided
   if (request.tools && request.tools.length > 0) {
-    const toolsPrompt = formatToolsForPrompt(request.tools);
+    const toolsPrompt = formatToolsForPrompt(request.tools, orchestratorStrict);
     if (toolsPrompt) {
       prompt = `<system>\n${toolsPrompt}\n</system>\n\n${prompt}`;
     }
@@ -158,5 +172,6 @@ export function openaiToCli(request: OpenAIChatRequest): CliInput {
     prompt,
     model: extractModel(request.model),
     sessionId: request.user, // Use OpenAI's user field for session mapping
+    orchestratorStrict,
   };
 }

@@ -19,6 +19,7 @@ import {
 } from "../adapter/tool-call-parser.js";
 import type { OpenAIChatRequest, OpenAIToolCall } from "../types/openai.js";
 import type { ClaudeCliAssistant, ClaudeCliResult, ClaudeCliStreamEvent } from "../types/claude-cli.js";
+import { isOrchestratorStrict } from "../config/orchestrator.js";
 
 /**
  * Handle POST /v1/chat/completions
@@ -44,6 +45,16 @@ export async function handleChatCompletions(
         },
       });
       return;
+    }
+
+    if (
+      isOrchestratorStrict() &&
+      (!body.tools || body.tools.length === 0)
+    ) {
+      console.warn(
+        "[proxy] CLAW_PROXY_ORCHESTRATOR_STRICT is set but request has no tools; " +
+          "strict prompts and native-tool blocking are disabled for this request."
+      );
     }
 
     // Convert to CLI input format
@@ -104,6 +115,22 @@ async function handleStreamingResponse(
     let lastModel = "claude-sonnet-4";
     let isComplete = false;
     let hasEmittedText = false;
+
+    // OpenAI streaming: first `data:` chunk should include `role: assistant`
+    // so clients see it even if text deltas arrive later or only in `flush`.
+    const initialRoleChunk = {
+      id: `chatcmpl-${requestId}`,
+      object: "chat.completion.chunk",
+      created: Math.floor(Date.now() / 1000),
+      model: lastModel,
+      choices: [{
+        index: 0,
+        delta: { role: "assistant" as const },
+        finish_reason: null,
+      }],
+    };
+    res.write(`data: ${JSON.stringify(initialRoleChunk)}\n\n`);
+    isFirst = false;
     // Always detect <tool_call> blocks — tools may be defined in the system
     // prompt text even when request.tools is empty (OpenClaw injects them)
     const toolCallDetector = new StreamingToolCallDetector();
@@ -302,6 +329,22 @@ async function handleStreamingResponse(
     subprocess.on("tool_use_start", (event: ClaudeCliStreamEvent) => {
       const cb = event.event.content_block;
       const toolName = (cb && cb.type === "tool_use" && cb.name) || "unknown";
+
+      // OpenClaw-first strict: native tool_use is forbidden — kill immediately
+      if (cliInput.orchestratorStrict) {
+        console.error(
+          `[Streaming] Orchestrator strict: native tool blocked: ${toolName}`
+        );
+        nativeToolCount++;
+        if (toolCallKillTimer) clearTimeout(toolCallKillTimer);
+        if (!isComplete && subprocess.isRunning()) {
+          isComplete = true;
+          subprocess.kill();
+          finalizeStream();
+        }
+        return;
+      }
+
       currentNativeToolName = toolName;
       currentNativeToolInput = "";
       nativeToolCount++;
@@ -438,6 +481,7 @@ async function handleStreamingResponse(
     subprocess.start(cliInput.prompt, {
       model: cliInput.model,
       sessionId: cliInput.sessionId,
+      orchestratorStrict: cliInput.orchestratorStrict,
     }).catch((err) => {
       console.error("[Streaming] Subprocess start error:", err);
       reject(err);
@@ -457,6 +501,20 @@ async function handleNonStreamingResponse(
 ): Promise<void> {
   return new Promise((resolve) => {
     let finalResult: ClaudeCliResult | null = null;
+    let blockedByNativeTool = false;
+
+    if (cliInput.orchestratorStrict) {
+      subprocess.on("tool_use_start", (event: ClaudeCliStreamEvent) => {
+        const cb = event.event.content_block;
+        const toolName =
+          (cb && cb.type === "tool_use" && cb.name) || "unknown";
+        console.error(
+          `[NonStreaming] Orchestrator strict: native tool blocked: ${toolName}`
+        );
+        blockedByNativeTool = true;
+        subprocess.kill();
+      });
+    }
 
     subprocess.on("result", (result: ClaudeCliResult) => {
       finalResult = result;
@@ -475,6 +533,18 @@ async function handleNonStreamingResponse(
     });
 
     subprocess.on("close", (code: number | null) => {
+      if (blockedByNativeTool && !res.headersSent) {
+        res.status(502).json({
+          error: {
+            message:
+              "Claude Code attempted to use a native tool; orchestrator strict mode allows only <tool_call> XML for OpenClaw. Retry or adjust the prompt.",
+            type: "invalid_request_error",
+            code: "orchestrator_native_tool_blocked",
+          },
+        });
+        resolve();
+        return;
+      }
       if (finalResult) {
         // Always parse tool calls — tools may be defined in system prompt text
         let toolCalls: OpenAIToolCall[] | undefined;
@@ -504,6 +574,7 @@ async function handleNonStreamingResponse(
       .start(cliInput.prompt, {
         model: cliInput.model,
         sessionId: cliInput.sessionId,
+        orchestratorStrict: cliInput.orchestratorStrict,
       })
       .catch((error) => {
         res.status(500).json({

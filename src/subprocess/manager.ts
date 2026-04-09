@@ -31,6 +31,8 @@ export interface SubprocessOptions {
   sessionId?: string;
   cwd?: string;
   timeout?: number;
+  /** When true, append OPENCLAW_TOOL_MAPPING_PROMPT_STRICT instead of default */
+  orchestratorStrict?: boolean;
 }
 
 export interface SubprocessEvents {
@@ -93,6 +95,34 @@ const OPENCLAW_TOOL_MAPPING_PROMPT = [
   "Run `openclaw skills list --eligible --json` to see all available skills.",
 ].join("\n");
 
+/**
+ * Strict orchestrator append prompt: Claude Code must not use native tools;
+ * OpenClaw executes everything via <tool_call> XML from the request tools list.
+ */
+const OPENCLAW_TOOL_MAPPING_PROMPT_STRICT = [
+  "## OpenClaw orchestrator mode (strict)",
+  "",
+  "You are the reasoning and planning layer only. OpenClaw (the caller) runs all",
+  "tools in the user's environment. Claude Code native tools must not be used.",
+  "",
+  "### FORBIDDEN",
+  "- Do NOT invoke any Claude Code native tool (Read, Write, Edit, Bash, Grep, Glob,",
+  "  Task, WebFetch, WebSearch, or any other tool_use in this CLI).",
+  "- Do NOT run `openclaw` or other shell commands via Bash.",
+  "- Do NOT substitute Bash/Read for actions that OpenClaw tools can perform.",
+  "",
+  "### REQUIRED",
+  "- Use plain text for reasoning, plans, and short explanations.",
+  "- To act on the environment, output ONLY <tool_call>...</tool_call> blocks exactly",
+  "  as specified under 'External Tools (Caller Environment)' in the prompt.",
+  "- The proxy forwards those blocks to OpenClaw as tool_calls.",
+  "- After emitting the <tool_call> blocks needed for this turn, STOP — do not use",
+  "  native tools afterward.",
+  "",
+  "### Skills and workflows",
+  "- Use OpenClaw tools and <tool_call> XML only. Do not follow Claude Code's",
+  "  skills/ directory or Bash-based skill flows for OpenClaw-equivalent work.",
+].join("\n");
 
 export class ClaudeSubprocess extends EventEmitter {
   private process: ChildProcess | null = null;
@@ -127,26 +157,34 @@ export class ClaudeSubprocess extends EventEmitter {
           }
         }, timeout);
 
-        // Handle spawn errors (e.g., claude not found)
+        // Handle spawn errors (e.g., claude not found). Must reject before any
+        // resolve(): we previously resolved() immediately, so reject() here
+        // was ignored and routes only saw `close` with code -2 (ENOENT).
         this.process.on("error", (err) => {
           this.clearTimeout();
-          if (err.message.includes("ENOENT")) {
-            reject(
-              new Error(
+          const wrapped = err.message.includes("ENOENT")
+            ? new Error(
                 "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code"
               )
-            );
-          } else {
-            reject(err);
-          }
+            : err;
+          reject(wrapped);
         });
 
-        // Pass prompt via stdin to avoid E2BIG on large inputs
-        this.process.stdin?.write(prompt);
-        this.process.stdin?.end();
+        // Resolve only after the OS has successfully spawned the child. If the
+        // binary is missing, `error` fires and `spawn` never fires — reject
+        // sticks and start().catch() runs before `close` listeners.
+        this.process.on("spawn", () => {
+          if (process.env.DEBUG_SUBPROCESS) {
+            console.error(`[Subprocess] Process spawned with PID: ${this.process?.pid}`);
+          }
+          // Pass prompt via stdin to avoid E2BIG on large inputs
+          this.process!.stdin?.write(prompt);
+          this.process!.stdin?.end();
+          resolve();
+        });
 
         if (process.env.DEBUG_SUBPROCESS) {
-          console.error(`[Subprocess] Process spawned with PID: ${this.process.pid}`);
+          console.error(`[Subprocess] Spawning Claude CLI...`);
         }
 
         // Parse JSON stream from stdout
@@ -177,15 +215,21 @@ export class ClaudeSubprocess extends EventEmitter {
             console.error(`[Subprocess] Process closed with code: ${code}`);
           }
           this.clearTimeout();
-          // Process any remaining buffer
+          // stream-json lines are usually newline-terminated, but the final
+          // line may omit a trailing \n. Without a flush, processBuffer()
+          // keeps the last line in `buffer` and never parses it — so `result`
+          // never fires and non-streaming requests return 500.
           if (this.buffer.trim()) {
+            this.buffer += "\n";
             this.processBuffer();
           }
-          this.emit("close", code);
+          // Defer so Promise rejection from spawn `error` is handled (catch
+          // microtask) before route `close` handlers — avoids "exited with -2"
+          // when the real failure is ENOENT.
+          queueMicrotask(() => {
+            this.emit("close", code);
+          });
         });
-
-        // Resolve immediately since we're streaming
-        resolve();
       } catch (err) {
         this.clearTimeout();
         reject(err);
@@ -208,7 +252,9 @@ export class ClaudeSubprocess extends EventEmitter {
       options.model, // Model alias (opus/sonnet/haiku)
       "--no-session-persistence", // Don't save sessions
       "--append-system-prompt",
-      OPENCLAW_TOOL_MAPPING_PROMPT,
+      options.orchestratorStrict
+        ? OPENCLAW_TOOL_MAPPING_PROMPT_STRICT
+        : OPENCLAW_TOOL_MAPPING_PROMPT,
       // Prompt is passed via stdin (avoids E2BIG on large inputs)
     ];
 

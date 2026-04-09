@@ -11,13 +11,23 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, stopServer } from "./server/index.js";
+import { verifyClaude } from "./subprocess/manager.js";
 import type { Server } from "http";
 import type { AddressInfo } from "net";
 
-console.warn("\n" + "=".repeat(70));
-console.warn("  WARNING: THIS TEST USES A REAL CLAUDE CODE CLI INSTANCE");
-console.warn("  IT WILL BURN TOKENS ON YOUR CLAUDE MAX SUBSCRIPTION");
-console.warn("=".repeat(70) + "\n");
+const claudeCheck = await verifyClaude();
+const describeWithCli = claudeCheck.ok ? describe : describe.skip;
+
+if (claudeCheck.ok) {
+  console.warn("\n" + "=".repeat(70));
+  console.warn("  WARNING: THIS TEST USES A REAL CLAUDE CODE CLI INSTANCE");
+  console.warn("  IT WILL BURN TOKENS ON YOUR CLAUDE MAX SUBSCRIPTION");
+  console.warn("=".repeat(70) + "\n");
+} else {
+  console.warn(
+    `\nSkipping chat completion E2E — ${claudeCheck.error ?? "Claude CLI unavailable"}\n`
+  );
+}
 
 let baseUrl: string;
 let server: Server;
@@ -94,7 +104,7 @@ describe("health and models", () => {
 
 // ─── Non-streaming completion ───────────────────────────────────────
 
-describe("non-streaming completion", { timeout: TEST_TIMEOUT }, () => {
+describeWithCli("non-streaming completion", { timeout: TEST_TIMEOUT }, () => {
   it("returns a valid OpenAI response for a simple prompt", async () => {
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
@@ -163,7 +173,7 @@ describe("non-streaming completion", { timeout: TEST_TIMEOUT }, () => {
 
 // ─── Streaming completion ───────────────────────────────────────────
 
-describe("streaming completion", { timeout: TEST_TIMEOUT }, () => {
+describeWithCli("streaming completion", { timeout: TEST_TIMEOUT }, () => {
   it("returns valid SSE chunks with usage in final chunk", async () => {
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",

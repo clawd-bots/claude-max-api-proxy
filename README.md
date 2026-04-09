@@ -120,6 +120,13 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
   }'
 ```
 
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `CLAW_PROXY_ORCHESTRATOR_STRICT` | Set to `1`, `true`, or `yes` to enable [OpenClaw-first orchestrator (strict)](#openclaw-first-orchestrator-strict) together with a non-empty `tools` array on chat requests. |
+| `CLAUDE_BIN` | Optional path to the `claude` executable if it is not on `PATH`. |
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -142,7 +149,16 @@ All model IDs also accept a `claude-code-cli/` prefix (e.g., `claude-code-cli/cl
 
 ### OpenClaw
 
-OpenClaw works with this proxy out of the box. The proxy automatically maps OpenClaw tool names to Claude Code equivalents and strips conflicting tooling sections from system prompts.
+OpenClaw works with this proxy out of the box. The proxy injects OpenClaw tools as `<tool_call>` XML instructions, parses them from the model output, and returns OpenAI-style `tool_calls` to the client. By default it also strips some OpenClaw system sections that clash with Claude Code’s dual-tool setup.
+
+#### OpenClaw-first orchestrator (strict)
+
+Set **`CLAW_PROXY_ORCHESTRATOR_STRICT=1`** when you want Claude Code to act only as the **reasoning** layer and **OpenClaw** to execute all real actions (desktop, browser, sessions, skills, etc. via your request `tools` list).
+
+- **Requires** a non-empty **`tools`** array on each chat request. If the env var is set but `tools` is empty, strict prompts and enforcement are skipped and a warning is logged.
+- **Prompts:** Preserves OpenClaw tooling sections in system messages (no stripping), uses OpenClaw-first tool instructions, and appends a strict system prompt that forbids Claude Code native `tool_use`.
+- **Enforcement:** If the model still invokes a Claude Code native tool (Read, Bash, etc.), the subprocess is killed. Streaming ends with whatever text/XML was already emitted; non-streaming returns **502** with `error.code`: `orchestrator_native_tool_blocked`.
+- **Trade-off:** Models may occasionally attempt native tools; each attempt is terminated. Skills and workflows should be exposed through **OpenClaw tool definitions**, not Claude Code’s `skills/` path.
 
 ### Continue.dev
 
@@ -206,6 +222,8 @@ src/
 ├── adapter/
 │   ├── openai-to-cli.ts   # Convert OpenAI requests → CLI format
 │   └── cli-to-openai.ts   # Convert CLI responses → OpenAI format
+├── config/
+│   └── orchestrator.ts    # CLAW_PROXY_ORCHESTRATOR_STRICT helpers
 ├── subprocess/
 │   └── manager.ts         # Claude CLI subprocess + OpenClaw tool mapping
 ├── session/

@@ -26,8 +26,14 @@ export function generateToolCallId(): string {
 /**
  * Format OpenAI tool definitions into a system prompt block
  * that instructs the model to output <tool_call> XML when it wants to use them.
+ *
+ * @param orchestratorStrict — When true (OpenClaw-first strict mode), OpenClaw is
+ *   the only execution path; Claude Code native tools must not be used.
  */
-export function formatToolsForPrompt(tools: OpenAIToolDefinition[]): string {
+export function formatToolsForPrompt(
+  tools: OpenAIToolDefinition[],
+  orchestratorStrict: boolean = false
+): string {
   if (!tools || tools.length === 0) return "";
 
   const toolDescriptions = tools.map((tool) => {
@@ -42,6 +48,26 @@ export function formatToolsForPrompt(tools: OpenAIToolDefinition[]): string {
     return desc;
   });
 
+  const rulesOrchestrator = [
+    "- The <tool_call> tag MUST be on its own line",
+    "- The JSON must be on a single line between the tags",
+    "- You may output multiple <tool_call> blocks",
+    "- You may output plain text before tool calls to explain your reasoning",
+    "- After outputting tool call blocks, do NOT output more text — OpenClaw will execute the tools and continue",
+    "- These tools are executed by OpenClaw, not by Claude Code. Do NOT use Claude Code native tools (Read, Bash, Write, Edit, etc.) for anything OpenClaw tools can do.",
+    "- All actions in the user's environment (desktop, browser, sessions, memory, etc.) MUST go through these tools and <tool_call> blocks only.",
+  ];
+
+  const rulesDefault = [
+    "- The <tool_call> tag MUST be on its own line",
+    "- The JSON must be on a single line between the tags",
+    "- You may output multiple <tool_call> blocks",
+    "- You may output text before tool calls to explain your reasoning",
+    "- After outputting tool call blocks, do NOT output more text — the caller will execute the tools and continue",
+    "- Only use these external tools when your built-in tools (Read, Bash, Edit, etc.) cannot accomplish the task",
+    "- Prefer these external tools for: web searches, sending messages, memory operations, cron jobs, browser automation, and session management",
+  ];
+
   return [
     "## External Tools (Caller Environment)",
     "",
@@ -53,13 +79,7 @@ export function formatToolsForPrompt(tools: OpenAIToolDefinition[]): string {
     "</tool_call>",
     "",
     "Rules:",
-    "- The <tool_call> tag MUST be on its own line",
-    "- The JSON must be on a single line between the tags",
-    "- You may output multiple <tool_call> blocks",
-    "- You may output text before tool calls to explain your reasoning",
-    "- After outputting tool call blocks, do NOT output more text — the caller will execute the tools and continue",
-    "- Only use these external tools when your built-in tools (Read, Bash, Edit, etc.) cannot accomplish the task",
-    "- Prefer these external tools for: web searches, sending messages, memory operations, cron jobs, browser automation, and session management",
+    ...(orchestratorStrict ? rulesOrchestrator : rulesDefault),
     "",
     "Available tools:",
     "",
