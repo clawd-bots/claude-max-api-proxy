@@ -1,7 +1,7 @@
 /**
  * API Route Handlers
  *
- * Implements OpenAI-compatible endpoints for Clawdbot integration
+ * Implements OpenAI-compatible endpoints for agent-framework callers
  */
 
 import type { Request, Response } from "express";
@@ -54,7 +54,7 @@ export async function handleChatCompletions(
       (!body.tools || body.tools.length === 0)
     ) {
       console.warn(
-        "[proxy] CLAW_PROXY_ORCHESTRATOR_STRICT is set but request has no tools; " +
+        "[proxy] CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT is set but request has no tools; " +
           "strict prompts and native-tool blocking are disabled for this request."
       );
     }
@@ -135,7 +135,7 @@ async function handleStreamingResponse(
     res.write(`data: ${JSON.stringify(initialRoleChunk)}\n\n`);
     isFirst = false;
     // Always detect <tool_call> blocks — tools may be defined in the system
-    // prompt text even when request.tools is empty (OpenClaw injects them)
+    // prompt text even when request.tools is empty (callers inject them)
     const toolCallDetector = new StreamingToolCallDetector();
     // Accumulate tool calls found mid-stream
     const pendingToolCalls: OpenAIToolCall[] = [];
@@ -145,8 +145,14 @@ async function handleStreamingResponse(
     let fullText = "";
     // Track native tool loop to prevent endless multi-turn cycles
     let nativeToolCount = 0;
+    /**
+     * Set when the turn is aborted for a structural reason (strict-mode native
+     * tool block, native tool loop). Used by finalizeStream to fail loudly
+     * instead of emitting an empty 200, which callers read as a valid response.
+     */
+    let abortReason: string | null = null;
     let lastTextTime = Date.now();
-    const hasExternalTools = true; // External tools are always injected via system prompt by OpenClaw
+    const hasExternalTools = true; // External tools are always injected via system prompt by the caller
     const NATIVE_TOOL_LOOP_LIMIT = 4; // Kill after this many native tools without text output
     const NATIVE_TOOL_LOOP_TIMEOUT = 30000; // 30s without text = stuck in loop
 
@@ -225,6 +231,30 @@ async function handleStreamingResponse(
 
       const hasToolCalls = allToolCalls.length > 0;
       console.error(`[Streaming] Finalizing: ${allToolCalls.length} tool calls [${allToolCalls.map(tc => tc.function.name).join(", ")}], finish_reason=${hasToolCalls ? "tool_calls" : "stop"}`);
+
+      // A turn that produced no tool calls AND no text is not a valid response.
+      // Emitting finish_reason=stop here yields an HTTP 200 with in=0 out=0,
+      // which callers (Hermes, OpenAI SDKs) read as a successful empty reply —
+      // so a hard structural failure silently looks like the model had nothing
+      // to say, and provider fallback never fires. Surface it as an error.
+      if (!hasToolCalls && !hasEmittedText && !flushed.remainingText) {
+        const message = abortReason
+          ? `Claude Code CLI produced no output: ${abortReason}`
+          : "Claude Code CLI produced no output (no text and no tool calls)";
+        console.error(`[Streaming] Emitting error instead of empty stop: ${message}`);
+        res.write(
+          `data: ${JSON.stringify({
+            error: {
+              message,
+              type: "upstream_error",
+              code: "empty_completion",
+            },
+          })}\n\n`
+        );
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
 
       // Send final done chunk
       const doneChunk = createDoneChunk(requestId, lastModel);
@@ -334,7 +364,7 @@ async function handleStreamingResponse(
       const toolName = (cb && cb.type === "tool_use" && cb.name) || "unknown";
       const allowedReadOnly = isOrchestratorStrictNativeToolAllowed(toolName);
 
-      // OpenClaw-first strict: block native tools except read-only (Read/Glob/Grep)
+      // Caller-first strict: block native tools except read-only (Read/Glob/Grep)
       if (
         cliInput.orchestratorStrict &&
         !allowedReadOnly
@@ -342,6 +372,7 @@ async function handleStreamingResponse(
         console.error(
           `[Streaming] Orchestrator strict: native tool blocked: ${toolName}`
         );
+        abortReason = `orchestrator strict mode blocked native tool "${toolName}"; the model must act via <tool_call> blocks instead`;
         nativeToolCount++;
         if (toolCallKillTimer) clearTimeout(toolCallKillTimer);
         if (!isComplete && subprocess.isRunning()) {
@@ -382,6 +413,7 @@ async function handleStreamingResponse(
         const timeSinceText = Date.now() - lastTextTime;
         if (timeSinceText > NATIVE_TOOL_LOOP_TIMEOUT) {
           console.error(`[Streaming] Killing subprocess — native tool loop detected (${nativeToolCount} tools, ${Math.round(timeSinceText / 1000)}s without text)`);
+          abortReason = `native tool loop detected (${nativeToolCount} native tools, ${Math.round(timeSinceText / 1000)}s without text output); the model ignored the <tool_call> contract`;
           if (!isComplete && subprocess.isRunning()) {
             isComplete = true;
             subprocess.kill();
@@ -404,17 +436,19 @@ async function handleStreamingResponse(
         return;
       }
 
-      // Intercept Bash commands that try to call openclaw CLI directly.
-      // Only match actual CLI invocations (e.g., "openclaw browser open"),
-      // NOT path references (e.g., "tail ~/.openclaw/logs/...").
+      // Intercept Bash commands that try to call the caller's CLI directly.
+      // Only match actual CLI invocations (e.g., "hermes browser open"),
+      // NOT path references (e.g., "tail ~/.hermes/logs/...").
+      // `openclaw` is the retired predecessor name, kept so old prompts and
+      // cached sessions that still emit it are intercepted rather than executed.
       if (currentNativeToolName === "Bash" && currentNativeToolInput) {
         try {
           const input = JSON.parse(currentNativeToolInput);
           const cmd = typeof input.command === "string" ? input.command : "";
-          // Match "openclaw" at start of command or after pipe/semicolon/&&/||
+          // Match the CLI name at start of command or after pipe/semicolon/&&/||
           // but NOT in file paths (preceded by / or ~/ or .)
-          if (cmd.match(/(?:^|[|;&]\s*)openclaw\b/i)) {
-            console.error(`[Streaming] Intercepted Bash→openclaw command: ${cmd.slice(0, 150)}`);
+          if (cmd.match(/(?:^|[|;&]\s*)(?:hermes|openclaw)\b/i)) {
+            console.error(`[Streaming] Intercepted Bash→caller-CLI command: ${cmd.slice(0, 150)}`);
             pendingToolCalls.push({
               id: generateToolCallId(),
               type: "function",
@@ -570,7 +604,7 @@ async function handleNonStreamingResponse(
         res.status(502).json({
           error: {
             message:
-              "Claude Code attempted to use a native tool; orchestrator strict mode allows only <tool_call> XML for OpenClaw. Retry or adjust the prompt.",
+              "Claude Code attempted to use a native tool; orchestrator strict mode allows only <tool_call> XML for the caller. Retry or adjust the prompt.",
             type: "invalid_request_error",
             code: "orchestrator_native_tool_blocked",
           },

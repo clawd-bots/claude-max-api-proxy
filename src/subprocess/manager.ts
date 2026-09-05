@@ -26,13 +26,14 @@ import {
 } from "../types/claude-cli.js";
 import type { ClaudeModel } from "../adapter/openai-to-cli.js";
 import { shouldForceNoSessionPersistence } from "../config/session-cli.js";
+import { shouldSkipPermissions } from "../config/permissions.js";
 
 export interface SubprocessOptions {
   model: ClaudeModel;
   sessionId?: string;
   cwd?: string;
   timeout?: number;
-  /** When true, append OPENCLAW_TOOL_MAPPING_PROMPT_STRICT instead of default */
+  /** When true, append CALLER_TOOL_MAPPING_PROMPT_STRICT instead of default */
   orchestratorStrict?: boolean;
 }
 
@@ -51,83 +52,75 @@ const DEFAULT_TIMEOUT = 900000; // 15 minutes
  * System prompt appended to Claude CLI to handle the dual-tool environment.
  *
  * The model runs inside Claude Code CLI (which has native tools: Read, Write, Edit,
- * Bash, Grep, Glob, etc.) but the caller (OpenClaw) also provides external tools
+ * Bash, Grep, Glob, etc.) but the caller (the agent framework) also provides external tools
  * (exec, browser, web_search, memory_search, cron, sessions, etc.).
  *
- * External/OpenClaw tools MUST be called via <tool_call> XML blocks in the response
- * text — they are intercepted by the proxy and forwarded to OpenClaw for execution.
- * The model must NEVER attempt to run OpenClaw tools via Bash or any native tool.
+ * External caller tools MUST be called via <tool_call> XML blocks in the response
+ * text — they are intercepted by the proxy and forwarded to the caller for execution.
+ * The model must NEVER attempt to run caller tools via Bash or any native tool.
  */
-const OPENCLAW_TOOL_MAPPING_PROMPT = [
+const CALLER_TOOL_MAPPING_PROMPT = [
   "## Tool Name Mapping",
-  "You are running inside Claude Code CLI, not OpenClaw.",
+  "You are running inside Claude Code CLI, invoked through an OpenAI-compatible",
+  "proxy by a calling agent framework (the caller).",
   "",
-  "### CRITICAL: How to call OpenClaw external tools",
+  "### CRITICAL: How to call the caller's external tools",
   "When the system prompt lists tools under 'External Tools (Caller Environment)',",
   "you MUST call them using <tool_call> XML blocks in your text output.",
-  "The proxy intercepts these blocks and forwards them to OpenClaw for execution.",
+  "The proxy intercepts these blocks and forwards them to the caller for execution.",
   "",
   "NEVER use Bash, Read, or any Claude Code native tool to simulate or replace",
-  "external tool calls. Do NOT run `openclaw` CLI commands via Bash.",
-  "External tools (exec, process, browser, web_search, web_fetch, image,",
-  "memory_search, memory_get, message, cron, sessions_list, sessions_history,",
-  "sessions_send, sessions_spawn, sessions_yield, subagents, session_status,",
-  "nodes, canvas) can ONLY be invoked via <tool_call> blocks.",
+  "an external tool call. The external tools are exactly those listed under",
+  "'External Tools (Caller Environment)' — that list is authoritative for this",
+  "request. They can ONLY be invoked via <tool_call> blocks.",
   "",
   "### CRITICAL: After outputting <tool_call> blocks, STOP IMMEDIATELY",
   "Once you output one or more <tool_call> blocks, your turn is OVER.",
   "Do NOT use any Claude Code native tools (Read, Bash, Edit, etc.) after a <tool_call>.",
   "Do NOT output any more text after <tool_call> blocks.",
-  "The proxy will kill your process and forward the tool calls to OpenClaw.",
+  "The proxy will kill your process and forward the tool calls to the caller.",
   "",
   "### Claude Code native tools (for local work only)",
   "For local file and code operations, use Claude Code's built-in tools:",
   "- `Read` — read file contents",
   "- `Write` — write files",
   "- `Edit` — edit files",
-  "- `Bash` — run local shell commands (NOT for openclaw commands)",
+  "- `Bash` — run local shell commands",
   "- `Grep` — search file contents",
   "- `Glob` — find files by pattern",
-  "",
-  "### Skills",
-  "When a skill says to run a bash/python command, use the `Bash` tool directly.",
-  "Skills are located in the `skills/` directory relative to your working directory.",
-  "To use a skill: `Read` its SKILL.md file first, then follow the instructions using `Bash`.",
-  "Run `openclaw skills list --eligible --json` to see all available skills.",
 ].join("\n");
 
 /**
  * Strict orchestrator append prompt: Claude Code must not use native tools;
- * OpenClaw executes everything via <tool_call> XML from the request tools list.
+ * the caller executes everything via <tool_call> XML from the request tools list.
  */
-const OPENCLAW_TOOL_MAPPING_PROMPT_STRICT = [
-  "## OpenClaw orchestrator mode (strict)",
+const CALLER_TOOL_MAPPING_PROMPT_STRICT = [
+  "## Orchestrator mode (strict)",
   "",
-  "You are the reasoning and planning layer only. OpenClaw (the caller) runs all",
-  "actions in the user's environment via <tool_call> XML.",
+  "You are the reasoning and planning layer only. The calling agent framework",
+  "runs all actions in the user's environment via <tool_call> XML.",
   "",
   "### Allowed: read-only local inspection only",
   "You MAY use these Claude Code native tools to inspect the local workspace:",
   "`Read`, `Glob`, `Grep` — for context only. Do not use them to perform actions",
-  "that should go through OpenClaw tools.",
+  "that should go through the caller's tools.",
   "",
   "### FORBIDDEN",
   "- Do NOT invoke Write, Edit, Bash, Task, WebFetch, WebSearch, or any other",
   "  native tool besides Read, Glob, and Grep.",
-  "- Do NOT run `openclaw` or other shell commands via Bash.",
-  "- Do NOT substitute Bash or file writes for actions that OpenClaw tools can perform.",
+  "- Do NOT substitute Bash or file writes for actions the caller's tools perform.",
   "",
   "### REQUIRED",
   "- Use plain text for reasoning, plans, and short explanations.",
   "- To act on the environment, output ONLY <tool_call>...</tool_call> blocks exactly",
   "  as specified under 'External Tools (Caller Environment)' in the prompt.",
-  "- The proxy forwards those blocks to OpenClaw as tool_calls.",
+  "- The proxy forwards those blocks to the caller as tool_calls.",
   "- After emitting the <tool_call> blocks needed for this turn, STOP — do not use",
   "  native tools afterward.",
   "",
   "### Skills and workflows",
-  "- Use OpenClaw tools and <tool_call> XML only. Do not follow Claude Code's",
-  "  skills/ directory or Bash-based skill flows for OpenClaw-equivalent work.",
+  "- Use the caller's tools and <tool_call> XML only. Do not follow Claude Code's",
+  "  skills/ directory or Bash-based skill flows for work the caller's tools cover.",
 ].join("\n");
 
 export class ClaudeSubprocess extends EventEmitter {
@@ -249,7 +242,6 @@ export class ClaudeSubprocess extends EventEmitter {
   private buildArgs(options: SubprocessOptions): string[] {
     const args = [
       "--print", // Non-interactive mode
-      "--dangerously-skip-permissions", // Skip permission prompts
       "--output-format",
       "stream-json", // JSON streaming output
       "--verbose", // Required for stream-json
@@ -258,17 +250,27 @@ export class ClaudeSubprocess extends EventEmitter {
       options.model, // Model alias (opus/sonnet/haiku)
       "--append-system-prompt",
       options.orchestratorStrict
-        ? OPENCLAW_TOOL_MAPPING_PROMPT_STRICT
-        : OPENCLAW_TOOL_MAPPING_PROMPT,
+        ? CALLER_TOOL_MAPPING_PROMPT_STRICT
+        : CALLER_TOOL_MAPPING_PROMPT,
       // Prompt is passed via stdin (avoids E2BIG on large inputs)
     ];
+
+    // --dangerously-skip-permissions disables every confirmation gate in the
+    // spawned CLI. In orchestrator strict mode the proxy already blocks mutating
+    // native tools (only Read/Glob/Grep + harness-internal bookkeeping pass), so
+    // the flag buys nothing there while leaving an unsandboxed agent able to
+    // write anywhere the service user can reach. Default to NOT passing it;
+    // set CLAUDE_MAX_PROXY_SKIP_PERMISSIONS=1 to restore the old behaviour.
+    if (shouldSkipPermissions()) {
+      args.push("--dangerously-skip-permissions");
+    }
 
     if (options.sessionId) {
       args.push("--session-id", options.sessionId);
     }
 
     // Stateless API: avoid writing session files when no session id. When
-    // sessionId is set, allow CLI persistence unless CLAW_PROXY_NO_SESSION_PERSISTENCE.
+    // sessionId is set, allow CLI persistence unless CLAUDE_MAX_PROXY_NO_SESSION_PERSISTENCE.
     const noPersist =
       shouldForceNoSessionPersistence() || !options.sessionId;
     if (noPersist) {

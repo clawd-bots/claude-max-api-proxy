@@ -27,7 +27,7 @@ export function generateToolCallId(): string {
  * Format OpenAI tool definitions into a system prompt block
  * that instructs the model to output <tool_call> XML when it wants to use them.
  *
- * @param orchestratorStrict — When true (OpenClaw-first strict mode), OpenClaw is
+ * @param orchestratorStrict — When true (caller-first strict mode), the caller is
  *   the only execution path; Claude Code native tools must not be used.
  */
 export function formatToolsForPrompt(
@@ -53,8 +53,8 @@ export function formatToolsForPrompt(
     "- The JSON must be on a single line between the tags",
     "- You may output multiple <tool_call> blocks",
     "- You may output plain text before tool calls to explain your reasoning",
-    "- After outputting tool call blocks, do NOT output more text — OpenClaw will execute the tools and continue",
-    "- These tools are executed by OpenClaw. You may use Read, Glob, or Grep only for local read-only inspection; do NOT use Write, Edit, Bash, or other native tools for actions OpenClaw tools should perform.",
+    "- After outputting tool call blocks, do NOT output more text — the caller will execute the tools and continue",
+    "- These tools are executed by the caller. You may use Read, Glob, or Grep only for local read-only inspection; do NOT use Write, Edit, Bash, or other native tools for actions the caller's tools should perform.",
     "- All actions in the user's environment (desktop, browser, sessions, memory, etc.) MUST go through these tools and <tool_call> blocks only.",
   ];
 
@@ -71,7 +71,7 @@ export function formatToolsForPrompt(
   return [
     "## External Tools (Caller Environment)",
     "",
-    "The following tools are available in the calling environment (OpenClaw).",
+    "The following tools are available in the calling environment.",
     "When you need to use one of these tools, output a tool call block in this EXACT format:",
     "",
     "<tool_call>",
