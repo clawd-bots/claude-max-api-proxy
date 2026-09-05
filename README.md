@@ -124,7 +124,7 @@ curl -N -X POST http://localhost:3456/v1/chat/completions \
 
 | Variable | Description |
 |----------|-------------|
-| `CLAW_PROXY_ORCHESTRATOR_STRICT` | Set to `1`, `true`, or `yes` to enable [OpenClaw-first orchestrator (strict)](#openclaw-first-orchestrator-strict) together with a non-empty `tools` array on chat requests. |
+| `CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT` | Set to `1`, `true`, or `yes` to enable [OpenClaw-first orchestrator (strict)](#openclaw-first-orchestrator-strict) together with a non-empty `tools` array on chat requests. |
 | `CLAUDE_BIN` | Optional path to the `claude` executable if it is not on `PATH`. |
 
 ## API Endpoints
@@ -153,7 +153,7 @@ OpenClaw works with this proxy out of the box. The proxy injects OpenClaw tools 
 
 #### OpenClaw-first orchestrator (strict)
 
-Set **`CLAW_PROXY_ORCHESTRATOR_STRICT=1`** when you want Claude Code to act only as the **reasoning** layer and **OpenClaw** to execute all real actions (desktop, browser, sessions, skills, etc. via your request `tools` list).
+Set **`CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT=1`** when you want Claude Code to act only as the **reasoning** layer and **OpenClaw** to execute all real actions (desktop, browser, sessions, skills, etc. via your request `tools` list).
 
 - **Requires** a non-empty **`tools`** array on each chat request. If the env var is set but `tools` is empty, strict prompts and enforcement are skipped and a warning is logged.
 - **Prompts:** Preserves OpenClaw tooling sections in system messages (no stripping), uses OpenClaw-first tool instructions, and appends a strict system prompt that forbids Claude Code native `tool_use`.
@@ -223,7 +223,7 @@ src/
 │   ├── openai-to-cli.ts   # Convert OpenAI requests → CLI format
 │   └── cli-to-openai.ts   # Convert CLI responses → OpenAI format
 ├── config/
-│   └── orchestrator.ts    # CLAW_PROXY_ORCHESTRATOR_STRICT helpers
+│   └── orchestrator.ts    # CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT helpers
 ├── subprocess/
 │   └── manager.ts         # Claude CLI subprocess + OpenClaw tool mapping
 ├── session/

@@ -1,5 +1,5 @@
 /**
- * Claude Code CLI Provider Plugin for Clawdbot
+ * Claude Code CLI Provider Plugin for agent-framework callers
  *
  * Enables using Claude Max subscription through Claude Code CLI,
  * bypassing OAuth token scope restrictions.
@@ -16,28 +16,18 @@ const DEFAULT_MODEL = "claude-code-cli/claude-sonnet-4";
 
 // Available models
 const AVAILABLE_MODELS = [
-  {
-    id: "claude-opus-4",
-    name: "Claude Opus 4.5",
-    alias: "opus",
-    reasoning: true,
-  },
-  {
-    id: "claude-sonnet-4",
-    name: "Claude Sonnet 4",
-    alias: "sonnet",
-    reasoning: false,
-  },
-  {
-    id: "claude-haiku-4",
-    name: "Claude Haiku 4",
-    alias: "haiku",
-    reasoning: false,
-  },
+  { id: "claude-opus-5", name: "Claude Opus 5", alias: "opus", reasoning: true },
+  { id: "claude-opus-4-8", name: "Claude Opus 4.8", alias: "opus", reasoning: true },
+  { id: "claude-sonnet-5", name: "Claude Sonnet 5", alias: "sonnet", reasoning: true },
+  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", alias: "sonnet", reasoning: true },
+  { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", alias: "haiku", reasoning: false },
+  // Legacy ids kept so existing callers pinned to them keep resolving.
+  { id: "claude-opus-4", name: "Claude Opus 4", alias: "opus", reasoning: true },
+  { id: "claude-sonnet-4", name: "Claude Sonnet 4", alias: "sonnet", reasoning: false },
 ];
 
 /**
- * Build model definitions for Clawdbot config
+ * Build model definitions for caller config
  */
 function buildModelDefinition(model: (typeof AVAILABLE_MODELS)[number]) {
   return {

@@ -1,7 +1,7 @@
 /**
  * Session Manager
  *
- * Maps Clawdbot conversation IDs to Claude CLI session IDs
+ * Maps caller conversation IDs to Claude CLI session IDs
  * for maintaining conversation context across requests.
  */
 
@@ -10,7 +10,7 @@ import fs from "fs/promises";
 import path from "path";
 
 export interface SessionMapping {
-  clawdbotId: string;
+  callerId: string;
   claudeSessionId: string;
   createdAt: number;
   lastUsedAt: number;
@@ -57,10 +57,10 @@ class SessionManager {
   }
 
   /**
-   * Get or create a Claude session ID for a Clawdbot conversation
+   * Get or create a Claude session ID for a caller conversation
    */
-  getOrCreate(clawdbotId: string, model: string = "sonnet"): string {
-    const existing = this.sessions.get(clawdbotId);
+  getOrCreate(callerId: string, model: string = "sonnet"): string {
+    const existing = this.sessions.get(callerId);
 
     if (existing) {
       // Update last used time
@@ -72,16 +72,16 @@ class SessionManager {
     // Create new session
     const claudeSessionId = uuidv4();
     const mapping: SessionMapping = {
-      clawdbotId,
+      callerId,
       claudeSessionId,
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
       model,
     };
 
-    this.sessions.set(clawdbotId, mapping);
+    this.sessions.set(callerId, mapping);
     console.log(
-      `[SessionManager] Created session: ${clawdbotId} -> ${claudeSessionId}`
+      `[SessionManager] Created session: ${callerId} -> ${claudeSessionId}`
     );
 
     // Fire and forget save
@@ -95,15 +95,15 @@ class SessionManager {
   /**
    * Get existing session if it exists
    */
-  get(clawdbotId: string): SessionMapping | undefined {
-    return this.sessions.get(clawdbotId);
+  get(callerId: string): SessionMapping | undefined {
+    return this.sessions.get(callerId);
   }
 
   /**
    * Delete a session
    */
-  delete(clawdbotId: string): boolean {
-    const deleted = this.sessions.delete(clawdbotId);
+  delete(callerId: string): boolean {
+    const deleted = this.sessions.delete(callerId);
     if (deleted) {
       this.save().catch((err) =>
         console.error("[SessionManager] Save error:", err)

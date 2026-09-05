@@ -4,11 +4,13 @@
 
 import type { OpenAIChatRequest } from "../types/openai.js";
 import type { CliInput } from "../adapter/openai-to-cli.js";
+import { readBooleanEnv } from "./env.js";
 
 export function shouldLogChatRequests(): boolean {
-  const v = process.env.CLAW_PROXY_LOG_REQUESTS
-  if (v === undefined || v === "") return false
-  return /^(1|true|yes)$/i.test(v.trim())
+  return readBooleanEnv(
+    "CLAUDE_MAX_PROXY_LOG_REQUESTS",
+    "CLAW_PROXY_LOG_REQUESTS"
+  )
 }
 
 const PREVIEW_CHARS = 2000

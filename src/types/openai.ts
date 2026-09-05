@@ -1,6 +1,6 @@
 /**
  * Types for OpenAI-compatible API
- * Used for Clawdbot integration
+ * Used for agent-framework integration
  */
 
 export interface OpenAIContentBlock {
@@ -39,7 +39,7 @@ export interface OpenAIChatRequest {
   session_id?: string;
   /** Alias for `session_id` for clients that send a Claude-specific key */
   claude_session_id?: string;
-  /** Some clients (OpenClaw, assistants-style APIs) send a thread id here */
+  /** Some clients (agent frameworks, assistants-style APIs) send a thread id here */
   conversation_id?: string;
   thread_id?: string;
   /** OpenAI-style metadata bag — `conversation_id` / `session_id` used for CLI session */

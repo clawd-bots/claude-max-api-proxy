@@ -1,24 +1,26 @@
 /**
- * OpenClaw-first orchestrator strict mode (env CLAW_PROXY_ORCHESTRATOR_STRICT).
+ * Caller-first orchestrator strict mode (env CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT).
  * When enabled together with a non-empty `tools` array on the request, the proxy
- * uses OpenClaw-first prompts and blocks most Claude Code native tool_use
+ * uses caller-first prompts and blocks most Claude Code native tool_use
  * (Read/Glob/Grep remain allowed for local read-only inspection).
  */
 
 import type { OpenAIChatRequest } from "../types/openai.js";
+import { readBooleanEnv } from "./env.js";
 
 /**
- * True when CLAW_PROXY_ORCHESTRATOR_STRICT is set to a truthy value (1, true, yes).
+ * True when CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT is set to a truthy value (1, true, yes).
  */
 export function isOrchestratorStrict(): boolean {
-  const v = process.env.CLAW_PROXY_ORCHESTRATOR_STRICT;
-  if (v === undefined || v === "") return false;
-  return /^(1|true|yes)$/i.test(v.trim());
+  return readBooleanEnv(
+    "CLAUDE_MAX_PROXY_ORCHESTRATOR_STRICT",
+    "CLAW_PROXY_ORCHESTRATOR_STRICT"
+  );
 }
 
 /**
  * Strict prompts + native-tool enforcement apply only when the env flag is on
- * and the client sent tool definitions (OpenClaw use case).
+ * and the client sent tool definitions (agent-framework use case).
  */
 export function shouldEnforceOrchestratorStrict(
   request: OpenAIChatRequest

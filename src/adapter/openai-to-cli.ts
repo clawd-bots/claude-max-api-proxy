@@ -14,7 +14,7 @@ export interface CliInput {
   prompt: string;
   model: ClaudeModel;
   sessionId?: string;
-  /** True when strict OpenClaw-orchestrator mode is active for this request */
+  /** True when strict caller-orchestrator mode is active for this request */
   orchestratorStrict?: boolean;
 }
 
@@ -91,8 +91,12 @@ export function resolveCliSessionId(
 const MODEL_MAP: Record<string, ClaudeModel> = {
   // Direct model names (provider prefixes like `claude-code-cli/` and `claude-max/`
   // are stripped by extractModel before consulting this map)
+  "claude-opus-5": "opus",
+  "claude-opus-4-8": "opus",
+  "claude-opus-4-7": "opus",
   "claude-opus-4": "opus",
   "claude-opus-4-6": "opus",
+  "claude-sonnet-5": "sonnet",
   "claude-sonnet-4": "sonnet",
   "claude-sonnet-4-5": "sonnet",
   "claude-sonnet-4-6": "sonnet",
@@ -145,18 +149,23 @@ function extractText(content: string | OpenAIContentBlock[]): string {
 }
 
 /**
- * Strip OpenClaw-specific tooling sections from system prompts.
+ * Strip caller-specific tooling sections from system prompts.
  * These reference tools (exec, process, web_search, etc.) that don't exist
  * in the Claude Code CLI environment, causing the model to get confused.
- * We remove: ## Tooling, ## Tool Call Style, ## OpenClaw CLI Quick Reference,
- * ## OpenClaw Self-Update
+ *
+ * Covers both the legacy OpenClaw section names and the current Hermes ones —
+ * the caller was renamed OpenClaw -> Hermes, and a stale header list here means
+ * the section is passed through verbatim and the CLI session treats it as an
+ * injected persona describing an environment it cannot see.
  */
-function stripOpenClawTooling(text: string): string {
+function stripCallerTooling(text: string): string {
   const sectionsToStrip = [
     "## Tooling",
     "## Tool Call Style",
     "## OpenClaw CLI Quick Reference",
     "## OpenClaw Self-Update",
+    "## Hermes CLI Quick Reference",
+    "## Hermes Self-Update",
   ];
   let result = text;
   for (const section of sectionsToStrip) {
@@ -181,9 +190,9 @@ function stripOpenClawTooling(text: string): string {
  */
 export function messagesToPrompt(
   messages: OpenAIChatRequest["messages"],
-  options?: { stripOpenClawSections?: boolean }
+  options?: { stripCallerSections?: boolean }
 ): string {
-  const stripOpenClawSections = options?.stripOpenClawSections !== false;
+  const stripCallerSections = options?.stripCallerSections !== false;
 
   const parts: string[] = [];
 
@@ -192,10 +201,10 @@ export function messagesToPrompt(
     switch (msg.role) {
       case "system": {
         // System messages become context instructions
-        // In default mode, strip OpenClaw tooling sections that conflict with
-        // Claude Code. In orchestrator strict mode, preserve them for OpenClaw.
-        const systemBody = stripOpenClawSections
-          ? stripOpenClawTooling(text)
+        // In default mode, strip caller tooling sections that conflict with
+        // Claude Code. In orchestrator strict mode, preserve them for the caller.
+        const systemBody = stripCallerSections
+          ? stripCallerTooling(text)
           : text;
         parts.push(`<system>\n${systemBody}\n</system>\n`);
         break;
@@ -212,7 +221,7 @@ export function messagesToPrompt(
         break;
 
       case "tool":
-        // Tool result messages from OpenClaw — include tool_call_id for context
+        // Tool result messages from the caller — include tool_call_id for context
         parts.push(
           `<tool_result tool_call_id="${msg.tool_call_id || "unknown"}">\n${text}\n</tool_result>\n`
         );
@@ -232,7 +241,7 @@ export function openaiToCli(
 ): CliInput {
   const orchestratorStrict = shouldEnforceOrchestratorStrict(request);
   let prompt = messagesToPrompt(request.messages, {
-    stripOpenClawSections: !orchestratorStrict,
+    stripCallerSections: !orchestratorStrict,
   });
 
   // Inject external tool definitions into the prompt if tools are provided
